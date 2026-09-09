@@ -1,4 +1,5 @@
 import os
+import re
 from openpyxl import Workbook
 FOLDER_PATH = r"C:\Users\Lenovo\Desktop\KLTN\DATA\DATA TỔNG HỢP\BCTN"
 OUTPUT_FILE = "danh_sach_pdf.xlsx"
@@ -11,6 +12,26 @@ def quet_pdf(folder_path):
                 full_path = os.path.join(root, f)
                 danh_sach.append((f, full_path))
     return danh_sach
+
+def tach_ma_ck_va_nam(ten_file):
+    """
+    Tách mã chứng khoán và năm từ tên file theo đúng quy luật:
+        MÃCK_NĂM.pdf   (ví dụ: ABT_2024.pdf, ACC_2015.pdf)
+ 
+    Trả về (ma_ck, nam) - nếu không khớp quy luật thì trả về ("", "")
+    và tên file gốc sẽ được coi là bất thường (in cảnh báo ra console).
+    """
+    ten_khong_duoi = os.path.splitext(ten_file)[0]  # bỏ đuôi .pdf
+ 
+    # Khớp đúng dạng: 1 hoặc nhiều ký tự (mã CK) + "_" + 4 chữ số (năm)
+    match = re.fullmatch(r"([A-Za-z0-9]+)_(\d{4})", ten_khong_duoi.strip())
+    if match:
+        ma_ck = match.group(1).upper()
+        nam = match.group(2)
+        return ma_ck, nam
+    else:
+        print(f"⚠️  Tên file không đúng định dạng MÃCK_NĂM: {ten_file}")
+        return "", ""
  
  
 def xuat_excel(danh_sach, output_file):
@@ -19,16 +40,19 @@ def xuat_excel(danh_sach, output_file):
     ws.title = "Danh sach PDF"
  
     # Tiêu đề cột
-    ws.append(["STT", "Tên file", "Đường dẫn đầy đủ"])
+    ws.append(["STT", "Tên file", "Mã CK", "Năm", "Đường dẫn đầy đủ"])
  
     # Ghi dữ liệu
     for idx, (ten_file, duong_dan) in enumerate(danh_sach, start=1):
-        ws.append([idx, ten_file, duong_dan])
+        ma_ck, nam = tach_ma_ck_va_nam(ten_file)
+        ws.append([idx, ten_file, ma_ck, nam, duong_dan])
  
     # Chỉnh độ rộng cột cho dễ nhìn
     ws.column_dimensions["A"].width = 8
-    ws.column_dimensions["B"].width = 45
-    ws.column_dimensions["C"].width = 90
+    ws.column_dimensions["B"].width = 40
+    ws.column_dimensions["C"].width = 12
+    ws.column_dimensions["D"].width = 10
+    ws.column_dimensions["E"].width = 90
  
     wb.save(output_file)
  
