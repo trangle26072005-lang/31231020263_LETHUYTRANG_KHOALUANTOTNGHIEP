@@ -1,4 +1,4 @@
-INPUT_FOLDER = r"C:\Users\Lenovo\Desktop\KLTN\DATA\DATA TỔNG HỢP\BCTN SAMPLE TEST CODE"
+INPUT_FOLDER = r"C:\Users\Lenovo\Desktop\KLTN\DATA\DATA TỔNG HỢP\BCTN_F"
 import os
 import re
 import math
@@ -9,7 +9,9 @@ import pytesseract
 import sys
 import time
 import unicodedata
+import pickle
 import openpyxl
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 import collections
 from pdf2image import convert_from_path
 
@@ -18,9 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-OUTPUT_FILE = "digi_score_output.xlsx"
+OUTPUT_FILE = "digi_score_output_bctnF.xlsx"
+CHECKPOINT_FILE = "occurrence_checkpoint.pkl"
 
-KEYWORD_DICT_FILE = r"C:\Users\Lenovo\Desktop\KLTN\DATA\DATA TỔNG HỢP\keyword_dictionary.xlsx"
+KEYWORD_DICT_FILE = r"C:\Users\Lenovo\Desktop\KLTN\DATA\DATA TỔNG HỢP\BCTN\keyword_dictionary_new_formatted.xlsx"
 SHORT_TERM_MAX_LEN = 5  # từ/cụm <= độ dài này -> so khớp giữ nguyên hoa/thường (AI, 5G, IoT, CNTT...)
 NGUONG_KY_TU_SCAN = 50
 CONTEXT_WINDOW = 150
@@ -32,6 +35,58 @@ NEGATIVE_CONTEXT_WORDS = [
     "chứng chỉ", "ngành học", "khoa ",
 ]
 NEGATIVE_CONTEXT_WINDOW = 30
+
+def sanitize_for_excel(value):
+    """Loại bỏ ký tự điều khiển mà Excel không cho phép ghi vào cell."""
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
+
+def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    return df.map(sanitize_for_excel)  # pandas >= 2.1; dùng .applymap nếu bản cũ hơn
+def write_excel_output(detail_rows, summary_rows, occurrence_rows, output_file=OUTPUT_FILE):
+    """
+    Ghi 3 danh sách kết quả ra file Excel, sau khi đã sanitize.
+    Tách thành hàm riêng để có thể gọi lại độc lập từ checkpoint
+    nếu bước ghi Excel trong main() bị lỗi giữa chừng.
+    """
+    df_detail = sanitize_dataframe(pd.DataFrame(detail_rows))
+    df_summary = sanitize_dataframe(pd.DataFrame(summary_rows))
+    df_occurrence = sanitize_dataframe(pd.DataFrame(occurrence_rows))
+ 
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="Bank_Year_Summary", index=False)
+        df_detail.to_excel(writer, sheet_name="Keyword_Counts", index=False)
+        df_occurrence.to_excel(writer, sheet_name="Keyword_Occurrences", index=False)
+ 
+def rebuild_excel_from_checkpoint(checkpoint_path=CHECKPOINT_FILE, output_file=OUTPUT_FILE):
+    """
+    Khôi phục và ghi lại Excel từ file checkpoint đã lưu,
+    KHÔNG cần chạy lại OCR/trích xuất PDF.
+ 
+    Dùng khi: main() đã chạy xong vòng lặp xử lý PDF (đã lưu checkpoint),
+    nhưng bước ghi Excel bị lỗi (ví dụ IllegalCharacterError, mất điện,
+    đầy ổ đĩa...).
+ 
+    Cách dùng: mở terminal, chạy:
+        python -c "from codeanhvi import rebuild_excel_from_checkpoint; rebuild_excel_from_checkpoint()"
+    """
+    if not os.path.isfile(checkpoint_path):
+        print(f"[LỖI] Không tìm thấy checkpoint tại '{checkpoint_path}'.")
+        return
+ 
+    with open(checkpoint_path, "rb") as f:
+        data = pickle.load(f)
+ 
+    write_excel_output(
+        data["detail_rows"],
+        data["summary_rows"],
+        data["occurrence_rows"],
+        output_file=output_file,
+    )
+    print(f"✅ Đã ghi lại Excel từ checkpoint: {output_file}")
 
 def load_keyword_dictionary(path: str, sheet_name: str = "Keywords_Used"):
     """
@@ -621,7 +676,14 @@ def main():
 
         show_overall_progress(idx, total_files, filename, status="Đã xong")
 
-    
+    # Checkpoint: lưu kết quả thô ra đĩa trước khi ghi Excel
+    with open("checkpoint_results.pkl", "wb") as f:
+        pickle.dump({
+            "detail_rows": detail_rows,
+            "summary_rows": summary_rows,
+            "occurrence_rows": occurrence_rows,
+        }, f)
+    print("💾 Đã lưu checkpoint tạm tại checkpoint_results.pkl")
     total_elapsed = time.time() - _start_time
     print(f"\nTổng thời gian xử lý: {total_elapsed/60:.1f} phút\n")
     avg_per_file = total_elapsed / total_files if total_files > 0 else 0
@@ -634,13 +696,14 @@ def main():
         return f"{m} phút {s:02d} giây"
     
 
-    df_detail = pd.DataFrame(detail_rows)
-    df_summary = pd.DataFrame(summary_rows)
+    df_detail = sanitize_dataframe(pd.DataFrame(detail_rows))
+    df_summary = sanitize_dataframe(pd.DataFrame(summary_rows))
+    df_occurrence = sanitize_dataframe(pd.DataFrame(occurrence_rows))
 
     with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
         df_summary.to_excel(writer, sheet_name="Bank_Year_Summary", index=False)
         df_detail.to_excel(writer, sheet_name="Keyword_Counts", index=False)
-        pd.DataFrame(occurrence_rows).to_excel(writer, sheet_name="Keyword_Occurrences", index=False)
+        df_occurrence.to_excel(writer, sheet_name="Keyword_Occurrences", index=False)
 
     print(f"✅ HOÀN TẤT! Kết quả đã lưu tại: {OUTPUT_FILE}")
     print(f"   - Sheet 'Tong_hop': dùng để đưa vào Stata/R/Python chạy hồi quy")
